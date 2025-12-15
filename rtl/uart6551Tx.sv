@@ -1,6 +1,6 @@
 // ============================================================================
 //        __
-//   \\__/ o\    (C) 2004-2023  Robert Finch, Waterloo
+//   \\__/ o\    (C) 2004-2025  Robert Finch, Waterloo
 //    \  __ /    All rights reserved.
 //     \/_//     robfinch<remove>@finitron.ca
 //       ||
@@ -77,6 +77,7 @@ state_t state;		// state machine state
 reg [7:0] cnt;		// baud clock counter
 reg rd;
 reg p1, p2;			// parity bit
+wire awr;
 
 assign ack = cyc & cs;
 edge_det ued1 (.rst(rst), .clk(clk), .ce(1'b1), .i(ack & wr), .pe(awr), .ne(), .ee());
