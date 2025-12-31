@@ -45,8 +45,7 @@
 
 import wishbone_pkg::*;
 
-module uart6551_wb32(rst_i, clk_i, cs_config_i,
-	req, resp,
+module uart6551_wb32(cs_config_i,	s_bus_i,
 	cts_ni, rts_no, dsr_ni, dcd_ni, dtr_no, ri_ni,
 	rxd_i, txd_o, data_present,
 	rxDRQ_o, txDRQ_o,
@@ -85,12 +84,10 @@ localparam CFG_HEADER_TYPE = 8'h00;			// 00 = a general device
 parameter MSIX = 1'b0;
 parameter BUS_PROTOCOL = 0;
 
-input rst_i;
-input clk_i;			// bus clock eg. 50.000MHz
 input cs_config_i;
 // -------------------------------
-input wb_cmd_request32_t req;
-output wb_cmd_response32_t resp;
+wb_bus_interface.slave s_bus_i;
+
 //------------------------------------------
 wire [31:0] irq_o;		// interrupt request
 input cts_ni;			// clear to send - (flow control) active low
@@ -106,6 +103,12 @@ output rxDRQ_o;	// reciever DMA request
 output txDRQ_o;	// transmitter DMA request
 input xclk_i;		// external clock source
 input RxC_i;		// external receiver clock source
+
+wire rst_i = s_bus_i.rst;
+wire clk_i = s_bus_i.clk;
+wb_cmd_request32_t req = s_bus_i.req;
+wb_cmd_response32_t resp;
+always_comb s_bus_i.resp = resp;
 
 typedef struct packed {
 	logic [5:0] icno;
@@ -211,7 +214,6 @@ reg [15:0] irq_data;
 reg [11:0] irq_vecno;
 wire respack;
 wb_tranid_t resptid;
-wb_cmd_request32_t reqi;
 
 // config
 wb_cmd_request32_t cfg_req;
@@ -251,8 +253,6 @@ reg [3:0] sel;
 reg [31:0] dati;
 reg [31:0] dat_o;
 reg [31:0] adr_h;
-always_ff @(posedge clk_i)
-	reqi <= req;
 always_ff @(posedge clk_i)
 	dati <= req.dat;
 always_ff @(posedge clk_i)
@@ -294,11 +294,12 @@ else begin
 	case(state)
 	2'd0:
 		begin
-			if (BUS_PROTOCOL==0)
-				state <= 2'd1;
-			if (cfg_resp.ack)
+			if (cfg_resp.ack) begin
 				resp <= cfg_resp;
-			else (respack) begin
+				if (BUS_PROTOCOL==0)
+					state <= 2'd1;
+			end
+			else if (respack) begin
 				resp.ack <= 1'b1;
 				resp.tid <= resptid;
 				resp.next <= 1'b0;
@@ -307,6 +308,8 @@ else begin
 				resp.rty <= 1'b0;
 				resp.pri <= 4'd7;
 				resp.dat <= dat_o;
+				if (BUS_PROTOCOL==0)
+					state <= 2'd1;
 			end
 			else if (irqa) begin
 				resp.ack <= 1'b1;
@@ -320,9 +323,11 @@ else begin
 			end
 		end
 	2'd1:
-		if (!req.cyc) begin
-			resp <= {$bits(wb_cmd_response32_t){1'b0}};
-			state <= 2'd0;
+		begin
+			if (!req.cyc) begin
+				resp <= {$bits(wb_cmd_response32_t){1'b0}};
+				state <= 2'd0;
+			end
 		end
 	default:	state <= 2'd0;
 	endcase
@@ -389,7 +394,8 @@ uart6551Rx uart_rx0
 	.break_o(rxBreak),
 	.gerr(rxGErr),
 	.qcnt(rxQued),
-	.cnt(rxCnt)
+	.cnt(rxCnt),
+	.bitStream()
 );
 
 uart6551Tx uart_tx0
@@ -432,14 +438,14 @@ if (cs_io) begin
 	`UART_CMD:	dat_o <= {cmd3,cmd2,cmd1,cmd0};
 	`UART_CTRL:	dat_o <= {ctrl3,ctrl2,ctrl1,ctrl0};
 	`UART_IMC:	dat_o <= irq_info;
-	`UART_IMC2:	dat_O <= {15'd0,irq_bus_priority,irq_info_tid};
+	`UART_IMC2:	dat_o <= {15'd0,irq_bus_priority,irq_info_tid};
 	default:		dat_o <= 32'd0;
 	endcase
 end
 else
 	dat_o <= 32'd0;
 
-change_det ucd1 (.rst(rst_i), .clk(clk_i), .ce(1'b1), .i(irq), .cd(irq_cd));
+change_det #(1) ucd1 (.rst(rst_i), .clk(clk_i), .ce(1'b1), .i(irq), .cd(irq_cd));
 
 always_comb
 	if ((irq_cd|irq_cdr) & !respack)
@@ -611,7 +617,7 @@ else begin
       	end
       end
 		`UART_IMC:	if (&sel) irq_info <= dati;
-		`UART_IMC2:	if (&sel) {irq_bus_priority,irq_info_tid} <= dat_i;
+		`UART_IMC2:	if (&sel) {irq_bus_priority,irq_info_tid} <= dati;
 	 	default:
 	 		;
 	 	endcase
@@ -646,11 +652,11 @@ wire ibaud16 = c == 2'd1;
 
 // Detect an edge on the external clock
 wire xclkEdge;
-edge_det ed1(.rst(rst_i), .clk(clk_i), .ce(1'b1), .i(xclks[1]), .pe(xclkEdge), .ne() );
+edge_det ed1(.rst(rst_i), .clk(clk_i), .ce(1'b1), .i(xclks[1]), .pe(xclkEdge), .ne(), .ee() );
 
 // Detect an edge on the external clock
 wire rxClkEdge;
-edge_det ed2(.rst(rst_i), .clk(clk_i), .ce(1'b1), .i(RxCs[1]), .pe(rxClkEdge), .ne() );
+edge_det ed2(.rst(rst_i), .clk(clk_i), .ce(1'b1), .i(RxCs[1]), .pe(rxClkEdge), .ne(), .ee() );
 
 always_comb
 if (xClkSrc)		// 16x external clock (xclk)
